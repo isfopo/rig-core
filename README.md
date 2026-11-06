@@ -13,8 +13,8 @@ and user interfaces belong in the individual app repositories.
 
 - `audio` — device enumeration, capture/playback/duplex streams, meter helpers
 - `midi` — MIDI engine (RtMidi/test drivers) and monitor
-- `tempo` — internal clock, timeline, and beat/bar grid (in progress)
-- `config` — shared configuration loading helpers (in progress)
+- `tempo` — internal clock, timeline, and beat/bar grid
+- `config` — shared TOML configuration loading helpers
 
 ## Usage
 
