@@ -77,6 +77,29 @@ type Options struct {
 	SampleRate uint32
 	// LatencyMS is the requested callback period (default 10 ms).
 	LatencyMS uint32
+
+	// Name is the stream name reported to the audio backend (for example
+	// "rig-looper"). Empty uses the backend default. Direction-specific
+	// names below override it.
+	Name string
+	// CaptureName overrides Name for capture streams.
+	CaptureName string
+	// PlaybackName overrides Name for playback streams.
+	PlaybackName string
+}
+
+func (o Options) captureStreamName() string {
+	if o.CaptureName != "" {
+		return o.CaptureName
+	}
+	return o.Name
+}
+
+func (o Options) playbackStreamName() string {
+	if o.PlaybackName != "" {
+		return o.PlaybackName
+	}
+	return o.Name
 }
 
 func (o Options) channels() uint32 {
@@ -123,6 +146,8 @@ type Engine struct {
 	ctx  *malgo.AllocatedContext
 	stop sync.Once
 
+	appName *C.char // kept alive for the context's lifetime
+
 	mu   sync.Mutex
 	msgs []string // recent backend log lines, kept for error reporting
 }
@@ -130,15 +155,34 @@ type Engine struct {
 // NewEngine initializes the audio backend (WASAPI on Windows, ALSA first on
 // Linux — see backends()). Set TUPIER_AUDIO_DEBUG=1 for backend chatter.
 func NewEngine() (*Engine, error) {
+	return NewEngineWithName("")
+}
+
+// NewEngineWithName is like NewEngine but sets the application name reported
+// to the audio backend (for example "rig-looper"), which PipeWire/PulseAudio
+// use to name the client and its streams.
+func NewEngineWithName(name string) (*Engine, error) {
 	e := &Engine{}
+	if name != "" {
+		e.appName = C.CString(name)
+	}
 
 	var logProc malgo.LogProc
 	if os.Getenv("TUPIER_AUDIO_DEBUG") != "" {
 		logProc = e.note
 	}
 
-	ctx, err := malgo.InitContext(backends(runtime.GOOS), malgo.ContextConfig{}, logProc)
+	cfg := malgo.ContextConfig{}
+	if e.appName != nil {
+		cfg.Pulse.PApplicationName = (*byte)(unsafe.Pointer(e.appName))
+		cfg.Jack.PClientName = (*byte)(unsafe.Pointer(e.appName))
+	}
+	ctx, err := malgo.InitContext(backends(runtime.GOOS), cfg, logProc)
 	if err != nil {
+		if e.appName != nil {
+			C.free(unsafe.Pointer(e.appName))
+			e.appName = nil
+		}
 		return nil, fmt.Errorf("audio context: %w (%s)", err, e.recent())
 	}
 	e.ctx = ctx
@@ -210,6 +254,10 @@ func (e *Engine) Close() {
 			e.ctx.Free()
 			e.ctx = nil
 		}
+		if e.appName != nil {
+			C.free(unsafe.Pointer(e.appName))
+			e.appName = nil
+		}
 	})
 }
 
@@ -234,6 +282,13 @@ func (e *Engine) OpenCapture(opts Options, deliver func(samples []int16)) (*Stre
 	}
 	if devID != nil { // ID must stay alive until InitDevice copied it
 		defer C.free(devID)
+	}
+
+	if cn := opts.captureStreamName(); cn != "" {
+		cfg.Pulse.StreamNameCapture = cn
+	}
+	if pn := opts.playbackStreamName(); pn != "" {
+		cfg.Pulse.StreamNamePlayback = pn
 	}
 
 	dev, err := malgo.InitDevice(e.ctx.Context, cfg, malgo.DeviceCallbacks{
@@ -271,6 +326,13 @@ func (e *Engine) OpenPlayback(opts Options, pull func(n int) []int16) (*Stream, 
 	}
 	if devID != nil { // ID must stay alive until InitDevice copied it
 		defer C.free(devID)
+	}
+
+	if cn := opts.captureStreamName(); cn != "" {
+		cfg.Pulse.StreamNameCapture = cn
+	}
+	if pn := opts.playbackStreamName(); pn != "" {
+		cfg.Pulse.StreamNamePlayback = pn
 	}
 
 	dev, err := malgo.InitDevice(e.ctx.Context, cfg, malgo.DeviceCallbacks{
@@ -343,6 +405,13 @@ func (e *Engine) OpenDuplex(opts Options, handle func(out, in []int16)) (*Stream
 		cfg.Playback.DeviceID = cPlay
 	}
 
+	if cn := opts.captureStreamName(); cn != "" {
+		cfg.Pulse.StreamNameCapture = cn
+	}
+	if pn := opts.playbackStreamName(); pn != "" {
+		cfg.Pulse.StreamNamePlayback = pn
+	}
+
 	dev, err := malgo.InitDevice(e.ctx.Context, cfg, malgo.DeviceCallbacks{
 		Data: func(output, input []byte, frameCount uint32) {
 			var out, in []int16
@@ -400,6 +469,16 @@ func deviceConfig(kind malgo.DeviceType, opts Options) (malgo.DeviceConfig, unsa
 	} else {
 		cfg.Playback.Format = malgo.FormatS16
 		cfg.Playback.Channels = opts.channels()
+	}
+
+	if kind == malgo.Capture {
+		if name := opts.captureStreamName(); name != "" {
+			cfg.Pulse.StreamNameCapture = name
+		}
+	} else {
+		if name := opts.playbackStreamName(); name != "" {
+			cfg.Pulse.StreamNamePlayback = name
+		}
 	}
 
 	c := cDeviceID(opts.DeviceID)
