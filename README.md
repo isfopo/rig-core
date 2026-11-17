@@ -12,7 +12,7 @@ and user interfaces belong in the individual app repositories.
 ## Packages
 
 - `audio` — device enumeration, capture/playback/duplex streams, meter helpers
-- `midi` — MIDI engine (RtMidi/test drivers) and monitor
+- `midi` — MIDI engine (RtMidi/test drivers), monitor, and config-driven mapping table
 - `tempo` — internal clock, timeline, and beat/bar grid
 - `config` — shared TOML configuration loading helpers
 
@@ -26,6 +26,29 @@ Then reference it from `go.mod`:
 
     require github.com/isfopo/rig-core v0.0.0
     replace github.com/isfopo/rig-core => ./core
+
+## MIDI mapping
+
+`midi.MappingTable` provides a reusable, config-driven mapping from incoming
+MIDI messages to named actions. Apps define their own action vocabulary.
+
+TOML example:
+
+    [midi]
+    mappings = [
+      { device = "Launchpad", channel = 1, type = "note", number = 36, action = "record" },
+      { device = "Launchpad", channel = 1, type = "cc",   number = 7,  action = "volume", value = 127 },
+    ]
+
+Go usage:
+
+    var cfg struct {
+        Mappings midi.MappingTable `toml:"mappings"`
+    }
+    config.LoadValidated(path, &cfg)
+    if action, ok := cfg.Mappings.Action(portName, ev); ok {
+        // dispatch action
+    }
 
 ## Build
 
